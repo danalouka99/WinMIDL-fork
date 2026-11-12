@@ -412,12 +412,33 @@ public class WinMdReader
         MetadataReader mdReader, MethodDefinition method, string name,
         ISymbol parent, string? sourcePath)
     {
+        // Overload metadata, so members flattened onto a runtime class keep it (as midl.exe does).
+        // Same model as IDL [overload("Group")] Unique(...): the MethodDef name is the overload group
+        // and OverloadAttribute holds the unique name.
+        string? overloadName = null;
+        bool isDefaultOverload = false;
+        foreach (var attrHandle in method.GetCustomAttributes())
+        {
+            var attr = mdReader.GetCustomAttribute(attrHandle);
+            switch (GetAttributeTypeName(mdReader, attr.Constructor))
+            {
+                case "OverloadAttribute":
+                    overloadName = ReadFirstStringArgument(mdReader, attr) ?? overloadName;
+                    break;
+                case "DefaultOverloadAttribute":
+                    isDefaultOverload = true;
+                    break;
+            }
+        }
+
         var sig = method.DecodeSignature(new MidlSignatureTypeProvider(mdReader), null);
-        var symbol = new MethodSymbol(name, parent)
+        var symbol = new MethodSymbol(overloadName ?? name, parent)
         {
             ReturnType = ParseTypeRef(sig.ReturnType),
             IsExternal = true,
             SourceWinMdPath = sourcePath,
+            OverloadGroup = overloadName != null ? name : null,
+            IsDefaultOverload = isDefaultOverload,
         };
 
         foreach (var paramHandle in method.GetParameters())
@@ -447,22 +468,6 @@ public class WinMdReader
                 IsExternal = true,
                 SourceWinMdPath = sourcePath,
             });
-        }
-
-        // Overload metadata, so members flattened onto a runtime class keep it (as midl.exe does).
-        // Same convention as [overload("...")] in IDL: OverloadGroup holds the OverloadAttribute value.
-        foreach (var attrHandle in method.GetCustomAttributes())
-        {
-            var attr = mdReader.GetCustomAttribute(attrHandle);
-            switch (GetAttributeTypeName(mdReader, attr.Constructor))
-            {
-                case "OverloadAttribute":
-                    symbol.OverloadGroup = ReadFirstStringArgument(mdReader, attr) ?? symbol.OverloadGroup;
-                    break;
-                case "DefaultOverloadAttribute":
-                    symbol.IsDefaultOverload = true;
-                    break;
-            }
         }
 
         return symbol;

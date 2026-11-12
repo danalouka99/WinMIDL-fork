@@ -88,7 +88,7 @@ This document lists all diagnostics emitted by the MIDL compiler, organized by c
 | [MIDL1084](#midl1084) | Error | Static class instance member |
 | [MIDL1085](#midl1085) | Error | Duplicate property name |
 | [MIDL1086](#midl1086) | Error | Duplicate \[uuid\] attribute |
-| [MIDL1087](#midl1087) | Error | Duplicate \[overload\] name |
+| [MIDL1087](#midl1087) | Error | Duplicate \[overload\] method name |
 | [MIDL1088](#midl1088) | Error | \[marshaling\_behavior\] on non-class |
 | [MIDL1089](#midl1089) | Error | Field in runtimeclass |
 | [MIDL1090](#midl1090) | Error | \[threading\] on non-class |
@@ -154,7 +154,7 @@ This document lists all diagnostics emitted by the MIDL compiler, organized by c
 **Duplicate interface member name** — Interface members must have unique names. Use `[overload]` to disambiguate methods with the same name.
 
 ### MIDL1055
-**Same-arity overload needs [default_overload]** — When methods share the same name and parameter count, exactly one must have `[default_overload]`.
+**Same-arity overload needs [default_overload]** — When methods of an overload set (the same `[overload]` value, or the same name without `[overload]`) have the same parameter count, exactly one must have `[default_overload]` (midl.exe MIDL4015).
 
 ### MIDL1056
 **Deprecated base class** — Consider marking the derived class as deprecated when the base class is deprecated.
@@ -166,7 +166,7 @@ This document lists all diagnostics emitted by the MIDL compiler, organized by c
 **Duplicate method_name** — Each `[method_name("X")]` value must be unique within an interface.
 
 ### MIDL1059
-**Multiple default_overload** — For same-name same-arity methods, exactly one must have `[default_overload]`, not more.
+**Multiple default_overload** — For same-arity methods of an overload set, exactly one must have `[default_overload]`, not more (midl.exe MIDL4015).
 
 ### MIDL1060
 **Constructor arity conflict** — Cannot have two constructors with the same parameter count on the same contract version.
@@ -495,21 +495,23 @@ A type has more than one `[uuid]` attribute applied.
 
 ### MIDL1087
 
-**Duplicate \[overload\] name**
+**Duplicate \[overload\] method name**
 
 ```
-error MIDL1087: Duplicate [overload] name 'DoWorkEx' in 'IWidget'.
+error MIDL1087: Duplicate [overload] name 'DoWork' in 'IWidget'.
 ```
 
-Two methods in the same interface have the same `[overload]` name.
+Two `[overload]` methods in the same interface have the same name. As in midl.exe, the `[overload("X")]` value
+names the overload set: it is the projected name (written as the MethodDef name) and its methods share it. Each
+method's own name is its unique ABI name (written to `OverloadAttribute`). midl.exe reports this case as MIDL2096.
 
-**Fix:** Use unique `[overload]` names:
+**Fix:** Share the `[overload]` value and give each method a unique name:
 
 ```idl
-[overload("DoWorkWithInt")]
-void DoWork(Int32 x);
-[overload("DoWorkWithString")]
-void DoWork(String s);
+[overload("DoWork"), default_overload]
+void DoWorkWithInt(Int32 x);
+[overload("DoWork")]
+void DoWorkWithString(String s);
 ```
 
 ---

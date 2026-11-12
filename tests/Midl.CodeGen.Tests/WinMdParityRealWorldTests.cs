@@ -416,6 +416,8 @@ public class WinMdParityRealWorldTests : IDisposable
 
     // Shaped like Microsoft.UI.Xaml.Markup.IXamlMetadataProvider: TypeName (which the CLR
     // metadata reader projects to System.Type), a struct array, overloads, a property, an event.
+    // As in midl.exe, [overload("Find")] is the shared (MethodDef) name and FindByType/FindByName
+    // are the unique names written to OverloadAttribute.
     private const string ProviderReference = """
         namespace Windows.UI.Xaml.Interop
         {
@@ -428,8 +430,8 @@ public class WinMdParityRealWorldTests : IDisposable
             delegate void ChangedHandler(Int32 value);
             interface IProvider
             {
-                [overload("FindByType"), default_overload] String Find(Windows.UI.Xaml.Interop.TypeName type);
-                [overload("FindByName")] String Find(String fullName);
+                [overload("Find"), default_overload] String FindByType(Windows.UI.Xaml.Interop.TypeName type);
+                [overload("Find")] String FindByName(String fullName);
                 Definition[] GetDefinitions();
                 Int32 Count { get; set; };
                 event ChangedHandler Changed;

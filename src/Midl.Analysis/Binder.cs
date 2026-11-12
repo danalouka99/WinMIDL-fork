@@ -3560,7 +3560,9 @@ public partial class Binder
     private void CheckWinRtTypeCompatibility(TypeRef typeRef) { if (typeRef == TypeRef.Void || typeRef == TypeRef.Unknown) return; if (COnlyTypes.Contains(typeRef.Name)) _diagnostics.Add(DiagnosticDescriptors.WinRtTypeNotAllowed(typeRef.Name, typeRef.Position)); }
     private void ValidateDelegateReturnType(DelegateSymbol d) { /* WinRT delegates can return any type */ }
     private void ValidateInterfaceMemberNameUniqueness(InterfaceSymbol iface) { var seen = new Dictionary<string, ISymbol>(StringComparer.Ordinal); foreach (var member in iface.Members) { var name = member.Name; if (string.IsNullOrEmpty(name)) continue; if (member is MethodSymbol m && !string.IsNullOrEmpty(m.OverloadGroup)) continue; if (seen.TryGetValue(name, out var existing)) { if (existing is MethodSymbol em && !string.IsNullOrEmpty(em.OverloadGroup)) continue; _diagnostics.Add(DiagnosticDescriptors.InterfaceMemberNameCollision(name, iface.Name, GetSymbolPosition(member))); } else seen[name] = member; } }
-    private void ValidateDefaultOverloadExactlyOne(IReadOnlyList<ISymbol> members, string cn) { var g = new Dictionary<(string,int,string?,int?), List<MethodSymbol>>(); foreach (var member in members) if (member is MethodSymbol m && !string.IsNullOrEmpty(m.Name)) { var k = (m.Name, m.Parameters.Count, m.ContractName, m.ContractVersion); if (!g.TryGetValue(k, out var l)) { l = []; g[k] = l; } l.Add(m); } foreach (var (k, ms) in g) { if (ms.Count < 2) continue; int dc = 0; foreach (var m in ms) { if (m.IsDefaultOverload) dc++; } if (dc == 0) _diagnostics.Add(DiagnosticDescriptors.SameArityNeedsDefaultOverload(k.Item1, k.Item2, _posMap.GetPositionOfFirst(k.Item1))); else if (dc > 1) _diagnostics.Add(DiagnosticDescriptors.DefaultOverloadNotExactlyOne(k.Item1, k.Item2, dc, _posMap.GetPositionOfFirst(k.Item1))); } }
+    // Overload sets are keyed by the metadata name (the [overload("X")] value, else the method name), as
+    // midl.exe does for MIDL4015: the method name is the unique ABI name that goes to OverloadAttribute.
+    private void ValidateDefaultOverloadExactlyOne(IReadOnlyList<ISymbol> members, string cn) { var g = new Dictionary<(string,int,string?,int?), List<MethodSymbol>>(); foreach (var member in members) if (member is MethodSymbol m && !string.IsNullOrEmpty(m.Name)) { var k = (m.OverloadGroup ?? m.Name, m.Parameters.Count, m.ContractName, m.ContractVersion); if (!g.TryGetValue(k, out var l)) { l = []; g[k] = l; } l.Add(m); } foreach (var (k, ms) in g) { if (ms.Count < 2) continue; int dc = 0; foreach (var m in ms) { if (m.IsDefaultOverload) dc++; } if (dc == 0) _diagnostics.Add(DiagnosticDescriptors.SameArityNeedsDefaultOverload(k.Item1, k.Item2, GetSymbolPosition(ms[0]))); else if (dc > 1) _diagnostics.Add(DiagnosticDescriptors.DefaultOverloadNotExactlyOne(k.Item1, k.Item2, dc, GetSymbolPosition(ms[0]))); } }
     private void ValidateDeprecatedInheritance(RuntimeClassSymbol rc) { if (rc.BaseClass?.ResolvedSymbol is not RuntimeClassSymbol baseRc) return; if (string.IsNullOrEmpty(baseRc.DeprecatedMessage)) return; if (!string.IsNullOrEmpty(rc.DeprecatedMessage)) return; _diagnostics.Add(DiagnosticDescriptors.DeprecatedBaseClassInheritance(rc.Name, baseRc.Name, GetSymbolPosition(rc))); }
     private void ValidateMethodNameOverrideUniqueness(InterfaceSymbol iface) { var seen = new Dictionary<string, string>(StringComparer.Ordinal); foreach (var member in iface.Members) { if (member is not MethodSymbol m || string.IsNullOrEmpty(m.MethodNameOverride)) continue; if (!seen.TryAdd(m.MethodNameOverride, m.Name)) _diagnostics.Add(DiagnosticDescriptors.DuplicateMethodNameOverride(m.MethodNameOverride, iface.Name, GetSymbolPosition(m))); } }
     private void ValidateConstructorArityPerVersion(RuntimeClassSymbol rc) { List<ConstructorSymbol>? ctors = null; foreach (var member in rc.Members) { if (member is ConstructorSymbol ctor) { ctors ??= new List<ConstructorSymbol>(); ctors.Add(ctor); } } if (ctors == null || ctors.Count < 2) return; var g = new Dictionary<(int,int?), List<ConstructorSymbol>>(); foreach (var ctor in ctors) { var k = (ctor.Parameters.Count, ctor.ContractVersion); if (!g.TryGetValue(k, out var l)) { l = []; g[k] = l; } l.Add(ctor); } foreach (var (k, l) in g) if (l.Count > 1) _diagnostics.Add(DiagnosticDescriptors.ConstructorArityConflict(rc.Name, k.Item1, GetSymbolPosition(rc))); }
@@ -3629,21 +3631,14 @@ public partial class Binder
 
     private void ValidateDuplicateOverloadNames(InterfaceSymbol iface)
     {
-        var seen = new Dictionary<string, string>(StringComparer.Ordinal);
+        // [overload("X")] names the overload set (the projected MethodDef name) and is shared by its
+        // methods; each method's own name is the unique ABI name written to OverloadAttribute. midl.exe
+        // rejects two [overload] methods with the same name (MIDL2096), never a shared [overload] value.
+        var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var member in iface.Members)
         {
-            if (member is MethodSymbol m && !string.IsNullOrEmpty(m.OverloadGroup))
-            {
-                if (seen.TryGetValue(m.OverloadGroup, out _))
-                {
-                    // Always flag: ContainsKey is always true inside TryGetValue success branch
-                    _diagnostics.Add(DiagnosticDescriptors.DuplicateOverloadName(m.OverloadGroup, iface.Name, GetSymbolPosition(m)));
-                }
-                else
-                {
-                    seen[m.OverloadGroup] = m.Name;
-                }
-            }
+            if (member is MethodSymbol m && !string.IsNullOrEmpty(m.OverloadGroup) && !seen.Add(m.Name))
+                _diagnostics.Add(DiagnosticDescriptors.DuplicateOverloadName(m.Name, iface.Name, GetSymbolPosition(m)));
         }
     }
 

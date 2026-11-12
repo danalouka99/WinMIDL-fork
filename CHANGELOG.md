@@ -12,6 +12,8 @@
   - Generic types in flattened signatures no longer get a doubled arity suffix (``IAsyncOperation`1`1``)
 - `[attributeusage]` targets of attributes from referenced WinMDs are decoded from the WinRT `AttributeTargets` value the WinMD stores
 - **`/nomidl` writes only the `.winmd` and the header**, as `midl.exe` does, even when `/iid`, `/proxy` or `/dlldata` name output files. The OS build passes all three for every WinRT IDL directory, so WinMIDL wrote `_i.c`, `_p.c` and `dlldata.c` files that classic MIDL never produced (and binplaced the extra `_i.c`)
+- **Members a runtime class gets from an implemented interface carry the class's contract**, as in `midl.exe`: their stubs, property rows and event rows get the class's `ContractVersion`, whatever the interface's own version or contract, and for interfaces from other WinMDs too. They had the interface member's contract, or none (for example the stubs from `IXamlMetadataProvider`)
+- **`[overload("X")]` means what it means to `midl.exe`**: `X` names the overload set, which its methods share, and each method's own name is its unique ABI name. `[overload("Find")] String FindByType(...); [overload("Find")] String FindByName(...);` (the shape of `IXamlMetadataProvider`) no longer fails with MIDL1087, which now reports two `[overload]` methods with the same name (`midl.exe` MIDL2096). MIDL1055 and MIDL1059 group methods by overload set (`midl.exe` MIDL4015). Methods read from referenced WinMDs follow the same model, so flattened stubs keep the WinMD's MethodDef names
 
 ## v0.1.19 (2026-09-04)
 
