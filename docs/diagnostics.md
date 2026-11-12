@@ -951,9 +951,11 @@ The parameter name is reserved by the MIDL compiler for auto-generated ABI param
 error MIDL1014: Interface 'IWidgetFactory' version 1.0 is earlier than containing class version 2.0
 ```
 
-An interface's contract version is lower than the contract version of the runtimeclass that implements it.
+An interface the compiler synthesizes for a runtimeclass's own members has a contract version lower than the
+runtimeclass's. Interfaces the class lists as implemented are not checked: like `midl.exe`, WinMIDL accepts an
+implemented interface that is older than the class (exclusive or not).
 
-**Fix:** Update the interface's contract version to match or exceed the containing class version.
+**Fix:** Update the members' contract version to match or exceed the containing class version.
 
 ---
 
@@ -965,9 +967,10 @@ An interface's contract version is lower than the contract version of the runtim
 error MIDL1015: Interface 'IFoo' uses contract 'OtherContract' which is not in the contract history of runtimeclass 'Widget'
 ```
 
-An interface implemented by a runtimeclass uses a different contract family than the runtimeclass itself.
+An interface the compiler synthesizes for a runtimeclass's own members uses a contract that is not in the
+runtimeclass's contract history. Like `midl.exe`, WinMIDL accepts an implemented interface from another contract.
 
-**Fix:** Ensure the interface uses the same contract family as the runtimeclass.
+**Fix:** Ensure the members use a contract of the runtimeclass.
 
 ---
 

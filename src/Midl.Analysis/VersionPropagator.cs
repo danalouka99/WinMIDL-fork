@@ -219,7 +219,8 @@ public class VersionPropagator
     }
 
     /// <summary>
-    /// Rules 5 and 6: Validate interface versions and contract families for a runtimeclass.
+    /// Rules 5 and 6: Validate the versions and contract families of a runtimeclass's own members
+    /// (its synthesized interfaces), as midl.exe does (MIDL5132, MIDL5164).
     /// </summary>
     private void ValidateRuntimeClassInterfaces(
         RuntimeClassSymbol rc, Dictionary<string, ApiContractSymbol> contracts)
@@ -240,7 +241,9 @@ public class VersionPropagator
             }
         }
 
-        // Check synthesized interfaces
+        // Check synthesized interfaces. Interfaces the class declares it implements are not checked:
+        // midl.exe accepts an interface that is older than the class, exclusive or not, or that belongs
+        // to another contract, and stamps the class's members from it with the class's contract.
         foreach (var iface in rc.ImplementedInterfaces)
         {
             ValidateInterfaceForClass(
@@ -249,30 +252,6 @@ public class VersionPropagator
                 runtimeClassContract,
                 classContracts,
                 contracts);
-        }
-
-        // Check declared interfaces from the base list
-        if (rc.BaseClass?.ResolvedSymbol is InterfaceSymbol baseIface)
-        {
-            ValidateInterfaceForClass(
-                baseIface,
-                rc,
-                runtimeClassContract,
-                classContracts,
-                contracts);
-        }
-
-        foreach (var typeRef in rc.Interfaces)
-        {
-            if (typeRef.ResolvedSymbol is InterfaceSymbol declaredIface)
-            {
-                ValidateInterfaceForClass(
-                    declaredIface,
-                    rc,
-                    runtimeClassContract,
-                    classContracts,
-                    contracts);
-            }
         }
     }
 

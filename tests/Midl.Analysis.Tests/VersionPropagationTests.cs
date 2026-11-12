@@ -136,34 +136,9 @@ public class VersionPropagationTests
     }
 
     [Fact]
-    public void InterfaceVersionValidation()
+    public void ImplementedInterfaces_MayBeOlderThanTheClassOrInAnotherContract()
     {
-        var compilation = CompilationHelper.Compile("""
-            namespace TestApp
-            {
-                [contractversion(3)]
-                apicontract TestContract { }
-
-                [contract(TestContract, 1)]
-                interface IEarly { }
-
-                [contract(TestContract, 2)]
-                runtimeclass Widget : IEarly
-                {
-                    void DoSomething();
-                }
-            }
-            """);
-
-        var diag = Assert.Single(compilation.Diagnostics, d => d.Code == "MIDL1014");
-        Assert.Contains("IEarly", diag.Message);
-        Assert.Contains("version 1", diag.Message);
-        Assert.Contains("version 2", diag.Message);
-    }
-
-    [Fact]
-    public void ContractFamilyValidation()
-    {
+        // midl.exe accepts all three and gives the class's members from them the class's contract.
         var compilation = CompilationHelper.Compile("""
             namespace TestApp
             {
@@ -173,21 +148,24 @@ public class VersionPropagationTests
                 [contractversion(3)]
                 apicontract ContractB { }
 
-                [contract(ContractB, 1)]
-                interface IOther { }
+                [contract(ContractA, 1)]
+                interface IEarly { void Early(); }
 
                 [contract(ContractA, 1)]
-                runtimeclass Widget : IOther
+                [exclusiveto(Widget)]
+                interface IWidgetEarly { void WidgetEarly(); }
+
+                [contract(ContractB, 1)]
+                interface IOther { void Other(); }
+
+                [contract(ContractA, 2)]
+                runtimeclass Widget : [default] IWidgetEarly, IEarly, IOther
                 {
-                    void DoSomething();
                 }
             }
             """);
 
-        var diag = Assert.Single(compilation.Diagnostics, d => d.Code == "MIDL1015");
-        Assert.Contains("IOther", diag.Message);
-        Assert.Contains("ContractB", diag.Message);
-        Assert.Contains("Widget", diag.Message);
+        Assert.DoesNotContain(compilation.Diagnostics, d => d.Code is "MIDL1014" or "MIDL1015");
     }
 
     [Fact]
