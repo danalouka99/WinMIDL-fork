@@ -666,6 +666,18 @@ internal class TypeDefEmitter
         // the interface TypeRef; consumers use these rows to map class members to the interface.
         var flattenedImpls = new List<(MethodDefinitionHandle stub, InterfaceSymbol iface, string name, BlobBuilder sig)>();
 
+        // midl.exe stamps everything the class gets from an implemented interface (stubs, property and
+        // event rows) with the class's own contract, whatever the interface's version or contract, and
+        // for interfaces from other WinMDs too. Members declared in the class body keep their own.
+        var flattenedMembers = new HashSet<ISymbol>(ReferenceEqualityComparer.Instance);
+        void EmitStubContract(EntityHandle parent, ISymbol member, string? contractName, int? contractVersion, bool flattened)
+        {
+            if (flattened)
+                EmitContractVersionAttribute(parent, symbol, symbol.ContractName, symbol.ContractVersion);
+            else
+                EmitContractVersionAttribute(parent, member, contractName, contractVersion);
+        }
+
         void EmitMemberAsStub(ISymbol member, InterfaceSymbol? flattenedFrom = null)
         {
             bool flattened = flattenedFrom is not null;
@@ -680,11 +692,7 @@ internal class TypeDefEmitter
                     if (!emittedMethodNames.Add(sigKey)) return;
                     var stubHandle = EmitRuntimeMethodStub(method);
                     classMethodStubs.Add((sigKey, stubHandle));
-                    EmitContractVersionAttribute(
-                        stubHandle,
-                        method,
-                        method.ContractName,
-                        method.ContractVersion);
+                    EmitStubContract(stubHandle, method, method.ContractName, method.ContractVersion, flattened);
                     // EmitRuntimeMethodStub already copies [overload]/[default_overload].
                     if (flattened)
                         flattenedImpls.Add((stubHandle, flattenedFrom!, GetMetadataMethodName(method),
@@ -696,18 +704,11 @@ internal class TypeDefEmitter
                     if (!emittedPropertyNames.Add(prop.Name)) return;
                     var (getterStub, setterStub) = EmitRuntimePropertyStubs(prop);
                     classProperties.Add((prop, getterStub, setterStub));
+                    if (flattened) flattenedMembers.Add(prop);
                     if (!getterStub.IsNil)
-                        EmitContractVersionAttribute(
-                            getterStub,
-                            prop,
-                            prop.ContractName,
-                            prop.ContractVersion);
+                        EmitStubContract(getterStub, prop, prop.ContractName, prop.ContractVersion, flattened);
                     if (setterStub.HasValue)
-                        EmitContractVersionAttribute(
-                            setterStub.Value,
-                            prop,
-                            prop.ContractName,
-                            prop.ContractVersion);
+                        EmitStubContract(setterStub.Value, prop, prop.ContractName, prop.ContractVersion, flattened);
                     if (!getterStub.IsNil) classMethodStubs.Add(($"get_{prop.Name}", getterStub));
                     if (setterStub.HasValue) classMethodStubs.Add(($"put_{prop.Name}", setterStub.Value));
                     if (flattened)
@@ -728,16 +729,9 @@ internal class TypeDefEmitter
                     classMethodStubs.Add(($"add_{evt.Name}", adderStub));
                     classMethodStubs.Add(($"remove_{evt.Name}", removerStub));
                     classEvents.Add((evt, adderStub, removerStub));
-                    EmitContractVersionAttribute(
-                        adderStub,
-                        evt,
-                        evt.ContractName,
-                        evt.ContractVersion);
-                    EmitContractVersionAttribute(
-                        removerStub,
-                        evt,
-                        evt.ContractName,
-                        evt.ContractVersion);
+                    if (flattened) flattenedMembers.Add(evt);
+                    EmitStubContract(adderStub, evt, evt.ContractName, evt.ContractVersion, flattened);
+                    EmitStubContract(removerStub, evt, evt.ContractName, evt.ContractVersion, flattened);
                     if (flattened)
                     {
                         flattenedImpls.Add((adderStub, flattenedFrom!, $"add_{evt.Name}",
@@ -777,8 +771,8 @@ internal class TypeDefEmitter
         }
 
         // Emit Property/Event map tables on the runtimeclass TypeDef (single batch).
-        EmitPropertyTable(typeDef, classProperties, emitContractAttributes: true);
-        EmitEventTable(typeDef, classEvents, emitContractAttributes: true);
+        EmitPropertyTable(typeDef, classProperties, emitContractAttributes: true, symbol, flattenedMembers);
+        EmitEventTable(typeDef, classEvents, emitContractAttributes: true, symbol, flattenedMembers);
 
         // InterfaceImpl for synthesized default interface
         if (symbol.DefaultInterface is { IsSynthesized: true })
@@ -1618,7 +1612,9 @@ internal class TypeDefEmitter
     private void EmitPropertyTable(
         TypeDefinitionHandle typeDef,
         List<(PropertySymbol prop, MethodDefinitionHandle getter, MethodDefinitionHandle? setter)> properties,
-        bool emitContractAttributes = false)
+        bool emitContractAttributes = false,
+        RuntimeClassSymbol? runtimeClass = null,
+        IReadOnlySet<ISymbol>? flattenedMembers = null)
     {
         if (properties.Count == 0) return;
 
@@ -1632,11 +1628,14 @@ internal class TypeDefEmitter
                 M.GetOrAddBlob(propSig));
             if (emitContractAttributes)
             {
-                EmitContractVersionAttribute(
-                    propHandle,
-                    prop,
-                    prop.ContractName,
-                    prop.ContractVersion);
+                if (runtimeClass != null && flattenedMembers?.Contains(prop) == true)
+                    EmitContractVersionAttribute(propHandle, runtimeClass, runtimeClass.ContractName, runtimeClass.ContractVersion);
+                else
+                    EmitContractVersionAttribute(
+                        propHandle,
+                        prop,
+                        prop.ContractName,
+                        prop.ContractVersion);
             }
 
             if (first)
@@ -1654,7 +1653,9 @@ internal class TypeDefEmitter
     private void EmitEventTable(
         TypeDefinitionHandle typeDef,
         List<(EventSymbol evt, MethodDefinitionHandle adder, MethodDefinitionHandle remover)> events,
-        bool emitContractAttributes = false)
+        bool emitContractAttributes = false,
+        RuntimeClassSymbol? runtimeClass = null,
+        IReadOnlySet<ISymbol>? flattenedMembers = null)
     {
         if (events.Count == 0) return;
 
@@ -1673,11 +1674,14 @@ internal class TypeDefEmitter
                 eventType.IsNil ? _emitter.SystemObjectRef : eventType);
             if (emitContractAttributes)
             {
-                EmitContractVersionAttribute(
-                    eventHandle,
-                    evt,
-                    evt.ContractName,
-                    evt.ContractVersion);
+                if (runtimeClass != null && flattenedMembers?.Contains(evt) == true)
+                    EmitContractVersionAttribute(eventHandle, runtimeClass, runtimeClass.ContractName, runtimeClass.ContractVersion);
+                else
+                    EmitContractVersionAttribute(
+                        eventHandle,
+                        evt,
+                        evt.ContractName,
+                        evt.ContractVersion);
             }
 
             if (first)

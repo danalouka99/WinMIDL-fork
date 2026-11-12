@@ -591,6 +591,68 @@ public class WinMdParityRealWorldTests : IDisposable
         Assert.Equal("Windows.Foundation.IAsyncOperation`1<Boolean>", flush.DecodeSignature(new FqSignatureProvider(reader), null).ReturnType);
     }
 
+    private static string ContractSummary(MetadataReader reader, CustomAttributeHandleCollection attributes)
+    {
+        foreach (var h in attributes)
+        {
+            var attr = reader.GetCustomAttribute(h);
+            var ctor = reader.GetMemberReference((MemberReferenceHandle)attr.Constructor);
+            if (reader.GetString(reader.GetTypeReference((TypeReferenceHandle)ctor.Parent).Name) != "ContractVersionAttribute")
+                continue;
+            var blob = reader.GetBlobReader(attr.Value);
+            blob.ReadUInt16();
+            var contract = blob.RemainingBytes > 4 ? blob.ReadSerializedString() : "";
+            return $"{contract} v{blob.ReadUInt32() >> 16}";
+        }
+        return "(none)";
+    }
+
+    [Fact]
+    public void FlattenedMembers_TakeTheRuntimeClassContract()
+    {
+        // midl.exe stamps stubs, properties and events that come from an implemented interface with the
+        // class's contract, not the interface's (here v3); members declared in the class keep their own.
+        var bytes = CompileAndEmit("""
+            namespace N
+            {
+                [contractversion(3)]
+                apicontract LabContract {};
+
+                [contract(LabContract, 1)]
+                delegate void Handler(Int32 x);
+
+                [contract(LabContract, 3)]
+                interface INewer
+                {
+                    String Hello();
+                    Int32 Count { get; };
+                    event Handler Changed;
+                };
+
+                [contract(LabContract, 2)]
+                runtimeclass Widget : INewer
+                {
+                    Widget();
+                    Int32 Size { get; };
+                    [contract(LabContract, 3)]
+                    void Later();
+                };
+            }
+            """);
+        var reader = ReadRaw(bytes, out var pe); using var _ = pe;
+        var widget = FindTypeDef(reader, "Widget");
+
+        var methods = widget.GetMethods().Select(reader.GetMethodDefinition)
+            .ToDictionary(m => reader.GetString(m.Name), m => ContractSummary(reader, m.GetCustomAttributes()));
+        foreach (var name in new[] { ".ctor", "get_Size", "Hello", "get_Count", "add_Changed", "remove_Changed" })
+            Assert.Equal("N.LabContract v2", methods[name]);
+        Assert.Equal("N.LabContract v3", methods["Later"]);
+        foreach (var p in widget.GetProperties().Select(reader.GetPropertyDefinition))
+            Assert.Equal("N.LabContract v2", ContractSummary(reader, p.GetCustomAttributes()));
+        var changed = reader.GetEventDefinition(Assert.Single(widget.GetEvents()));
+        Assert.Equal("N.LabContract v2", ContractSummary(reader, changed.GetCustomAttributes()));
+    }
+
     private static List<string> AttributeSummary(MetadataReader reader, MethodDefinition method)
     {
         var result = new List<string>();
