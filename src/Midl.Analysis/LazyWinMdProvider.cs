@@ -33,7 +33,8 @@ public class LazyWinMdProvider : IDisposable
     {
         var bytes = File.ReadAllBytes(winmdPath);
         _peReader = new PEReader(new MemoryStream(bytes));
-        _mdReader = _peReader.GetMetadataReader();
+        // Raw metadata, as in WinMdReader: no WinRT->CLR projection of referenced type names.
+        _mdReader = _peReader.GetMetadataReader(MetadataReaderOptions.None);
         _sourcePath = winmdPath;
 
         // Build lightweight index: just names → handles (fast, no type decoding)
@@ -58,7 +59,7 @@ public class LazyWinMdProvider : IDisposable
     internal LazyWinMdProvider(byte[] winmdBytes)
     {
         _peReader = new PEReader(new MemoryStream(winmdBytes));
-        _mdReader = _peReader.GetMetadataReader();
+        _mdReader = _peReader.GetMetadataReader(MetadataReaderOptions.None);
         _sourcePath = null;
 
         _typeIndex = new(StringComparer.Ordinal);

@@ -661,8 +661,14 @@ internal class TypeDefEmitter
         var emittedPropertyNames = new HashSet<string>(StringComparer.Ordinal);
         var emittedEventNames = new HashSet<string>(StringComparer.Ordinal);
 
-        void EmitMemberAsStub(ISymbol member)
+        // Stubs of members flattened from explicit interfaces (and their required closure). midl.exe
+        // links each one to the interface member with a MethodImpl whose declaration is a MemberRef on
+        // the interface TypeRef; consumers use these rows to map class members to the interface.
+        var flattenedImpls = new List<(MethodDefinitionHandle stub, InterfaceSymbol iface, string name, BlobBuilder sig)>();
+
+        void EmitMemberAsStub(ISymbol member, InterfaceSymbol? flattenedFrom = null)
         {
+            bool flattened = flattenedFrom is not null;
             switch (member)
             {
                 case MethodSymbol method:
@@ -679,6 +685,10 @@ internal class TypeDefEmitter
                         method,
                         method.ContractName,
                         method.ContractVersion);
+                    // EmitRuntimeMethodStub already copies [overload]/[default_overload].
+                    if (flattened)
+                        flattenedImpls.Add((stubHandle, flattenedFrom!, GetMetadataMethodName(method),
+                            EncodeMethodSig(method.ReturnType, method.Parameters, hasThis: true)));
                     break;
                 }
                 case PropertySymbol prop:
@@ -700,6 +710,15 @@ internal class TypeDefEmitter
                             prop.ContractVersion);
                     if (!getterStub.IsNil) classMethodStubs.Add(($"get_{prop.Name}", getterStub));
                     if (setterStub.HasValue) classMethodStubs.Add(($"put_{prop.Name}", setterStub.Value));
+                    if (flattened)
+                    {
+                        if (!getterStub.IsNil)
+                            flattenedImpls.Add((getterStub, flattenedFrom!, $"get_{prop.Name}",
+                                EncodeMethodSig(prop.Type, Array.Empty<ParameterSymbol>(), hasThis: true)));
+                        if (setterStub.HasValue)
+                            flattenedImpls.Add((setterStub.Value, flattenedFrom!, $"put_{prop.Name}",
+                                EncodeSetterSig(prop.Type, hasThis: true)));
+                    }
                     break;
                 }
                 case EventSymbol evt:
@@ -719,6 +738,13 @@ internal class TypeDefEmitter
                         evt,
                         evt.ContractName,
                         evt.ContractVersion);
+                    if (flattened)
+                    {
+                        flattenedImpls.Add((adderStub, flattenedFrom!, $"add_{evt.Name}",
+                            EncodeEventAccessorSig(evt, isAdd: true, hasThis: true)));
+                        flattenedImpls.Add((removerStub, flattenedFrom!, $"remove_{evt.Name}",
+                            EncodeEventAccessorSig(evt, isAdd: false, hasThis: true)));
+                    }
                     break;
                 }
             }
@@ -739,7 +765,7 @@ internal class TypeDefEmitter
             foreach (var member in iface.Members)
             {
                 if (member is MethodSymbol { IsStatic: false } or PropertySymbol { IsStatic: false } or EventSymbol { IsStatic: false })
-                    EmitMemberAsStub(member);
+                    EmitMemberAsStub(member, iface);
             }
         }
 
@@ -819,6 +845,18 @@ internal class TypeDefEmitter
             }
         }
 
+        // InterfaceImpl for the interfaces the explicit ones require (transitively): midl.exe lists
+        // the whole closure, so consumers see every interface the class implements.
+        var listedInterfaces = new HashSet<string>(
+            symbol.Interfaces.Select(i => i.ResolvedSymbol?.FullName ?? i.Name), StringComparer.Ordinal);
+        foreach (var iface in EnumerateFlattenInterfaceClosure(symbol))
+        {
+            if (!listedInterfaces.Add(iface.FullName)) continue;
+            var h = _emitter.ResolveSymbolHandle(iface);
+            if (!h.IsNil)
+                M.AddInterfaceImplementation(typeDef, h);
+        }
+
         // InterfaceImpls for protected interfaces.
         var protectedInterfaces = symbol.ProtectedInterfaces.Count > 0
             ? symbol.ProtectedInterfaces
@@ -870,6 +908,16 @@ internal class TypeDefEmitter
                     M.AddMethodImplementation(typeDef, stubHandle, ifaceMethod.handle);
                 }
             }
+        }
+
+        // MethodImpl: link stubs of flattened interface members to MemberRefs on the interface's
+        // TypeRef (midl.exe uses MemberRefs even for interfaces defined in this WinMD).
+        foreach (var (stub, iface, name, sig) in flattenedImpls)
+        {
+            var parent = _emitter.ResolveSymbolHandle(iface);
+            if (parent.IsNil) continue;
+            var memberRef = M.AddMemberReference(parent, M.GetOrAddString(name), M.GetOrAddBlob(sig));
+            M.AddMethodImplementation(typeDef, stub, memberRef);
         }
 
         // Reorder attributes to match original midl: Threading → Marshaling → Activatable → ContractVersion → Static
@@ -2091,6 +2139,7 @@ internal static class SignatureTypeEncoderExtensions
             var elemType = new TypeRef(typeRef.Name, typeRef.TypeArguments)
             {
                 IsBuiltIn = typeRef.IsBuiltIn,
+                IsValueType = typeRef.IsValueType,
                 ResolvedSymbol = typeRef.ResolvedSymbol,
             };
             encoder.SZArray().FromTypeRef(elemType, emitter);
@@ -2135,10 +2184,11 @@ internal static class SignatureTypeEncoderExtensions
                 else if (!string.IsNullOrEmpty(typeRef.Name))
                 {
                     // Unresolved external type (e.g., flattened interface member signatures
-                    // carry raw name strings). Emit a TypeRef by name.
+                    // carry raw name strings). Emit a TypeRef by name, keeping the valuetype
+                    // encoding the referenced WinMD used (structs and enums).
                     var handle = emitter.ResolveExternalByName(typeRef.Name);
                     if (!handle.IsNil)
-                        encoder.Type(handle, isValueType: false);
+                        encoder.Type(handle, typeRef.IsValueType);
                     else
                         encoder.Object();
                 }

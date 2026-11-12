@@ -3070,16 +3070,26 @@ public partial class Binder
     private void ResolveExternalRequiredInterfaces(TypeResolver resolver)
     {
         var throwaway = new List<Diagnostic>();
-        foreach (var fullName in _symbolTable.GetAllDefinedTypeFullNames().ToList())
+        // Resolving a required interface can lazily load another external interface whose own
+        // requirements must be resolved too, so repeat until no new types appear.
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        bool added = true;
+        while (added)
         {
-            var sym = _symbolTable.LookupDefinedType(fullName);
-            if (sym is InterfaceSymbol { IsExternal: true } iface)
+            added = false;
+            foreach (var fullName in _symbolTable.GetAllDefinedTypeFullNames().ToList())
             {
-                var ns = iface.ContainingSymbol as NamespaceSymbol ?? _globalNamespace;
-                foreach (var tr in iface.RequiredInterfaces)
+                if (!visited.Add(fullName)) continue;
+                added = true;
+                var sym = _symbolTable.LookupDefinedType(fullName);
+                if (sym is InterfaceSymbol { IsExternal: true } iface)
                 {
-                    if (tr.ResolvedSymbol is null)
-                        resolver.Resolve(tr, ns, throwaway);
+                    var ns = iface.ContainingSymbol as NamespaceSymbol ?? _globalNamespace;
+                    foreach (var tr in iface.RequiredInterfaces)
+                    {
+                        if (tr.ResolvedSymbol is null)
+                            resolver.Resolve(tr, ns, throwaway);
+                    }
                 }
             }
         }

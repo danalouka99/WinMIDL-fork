@@ -412,6 +412,201 @@ public class WinMdParityRealWorldTests : IDisposable
         Assert.Equal("String", sigSet.ParameterTypes[0]);
     }
 
+    // ────────── Flattened members of interfaces from other WinMDs keep their ABI ──────────
+
+    // Shaped like Microsoft.UI.Xaml.Markup.IXamlMetadataProvider: TypeName (which the CLR
+    // metadata reader projects to System.Type), a struct array, overloads, a property, an event.
+    private const string ProviderReference = """
+        namespace Windows.UI.Xaml.Interop
+        {
+            enum TypeKind { Primitive, Metadata, Custom };
+            struct TypeName { String Name; TypeKind Kind; };
+        }
+        namespace Ext
+        {
+            struct Definition { String Uri; String Namespace; };
+            delegate void ChangedHandler(Int32 value);
+            interface IProvider
+            {
+                [overload("FindByType"), default_overload] String Find(Windows.UI.Xaml.Interop.TypeName type);
+                [overload("FindByName")] String Find(String fullName);
+                Definition[] GetDefinitions();
+                Int32 Count { get; set; };
+                event ChangedHandler Changed;
+            };
+        }
+        """;
+
+    private const string ProviderHost = """
+        namespace N
+        {
+            runtimeclass Host : Ext.IProvider { };
+        }
+        """;
+
+    private static MetadataReader ReadRaw(byte[] bytes, out PEReader pe)
+    {
+        // Raw metadata: the default reader options would project TypeName to System.Type and hide a regression.
+        pe = new PEReader(new MemoryStream(bytes));
+        return pe.GetMetadataReader(MetadataReaderOptions.None);
+    }
+
+    [Fact]
+    public void FlattenedExternalMembers_KeepRawWinRTNamesAndValueTypes()
+    {
+        var bytes = CompileAndEmit(ProviderHost, [MakeTempWinMd(ProviderReference)]);
+        var reader = ReadRaw(bytes, out var pe); using var _ = pe;
+        var provider = new FqSignatureProvider(reader, markValueTypes: true);
+        var methods = FindTypeDef(reader, "Host").GetMethods().Select(reader.GetMethodDefinition).ToList();
+
+        var findParams = methods.Where(m => reader.GetString(m.Name) == "Find")
+            .Select(m => m.DecodeSignature(provider, null).ParameterTypes.Single()).ToList();
+        Assert.Equal(new[] { "String", "valuetype Windows.UI.Xaml.Interop.TypeName" }, findParams.Order(StringComparer.Ordinal));
+
+        var definitions = methods.Single(m => reader.GetString(m.Name) == "GetDefinitions");
+        Assert.Equal("valuetype Ext.Definition[]", definitions.DecodeSignature(provider, null).ReturnType);
+
+        var typeRefs = reader.TypeReferences.Select(h => FullName(reader, h)).ToList();
+        Assert.DoesNotContain("System.Type", typeRefs);
+    }
+
+    [Fact]
+    public void FlattenedExternalMembers_ImplementTheExternalInterfaceThroughMethodImpls()
+    {
+        var bytes = CompileAndEmit(ProviderHost, [MakeTempWinMd(ProviderReference)]);
+        var reader = ReadRaw(bytes, out var pe); using var _ = pe;
+        var host = FindTypeDef(reader, "Host");
+
+        var impls = host.GetMethodImplementations().Select(reader.GetMethodImplementation).ToList();
+        Assert.Equal(
+            new[] { "Find", "Find", "GetDefinitions", "add_Changed", "get_Count", "put_Count", "remove_Changed" },
+            impls.Select(mi => reader.GetString(reader.GetMethodDefinition((MethodDefinitionHandle)mi.MethodBody).Name)).Order(StringComparer.Ordinal));
+        Assert.All(impls, mi =>
+        {
+            Assert.Equal(HandleKind.MemberReference, mi.MethodDeclaration.Kind);
+            var body = reader.GetMethodDefinition((MethodDefinitionHandle)mi.MethodBody);
+            var decl = reader.GetMemberReference((MemberReferenceHandle)mi.MethodDeclaration);
+            Assert.Equal("Ext.IProvider", FullName(reader, decl.Parent));
+            Assert.Equal(reader.GetString(body.Name), reader.GetString(decl.Name));
+            Assert.Equal(reader.GetBlobBytes(body.Signature), reader.GetBlobBytes(decl.Signature));
+        });
+    }
+
+    [Fact]
+    public void FlattenedExternalMembers_KeepOverloadAttributes()
+    {
+        var bytes = CompileAndEmit(ProviderHost, [MakeTempWinMd(ProviderReference)]);
+        var reader = ReadRaw(bytes, out var pe); using var _ = pe;
+        var provider = new FqSignatureProvider(reader);
+
+        var overloads = FindTypeDef(reader, "Host").GetMethods().Select(reader.GetMethodDefinition)
+            .Where(m => reader.GetString(m.Name) == "Find")
+            .ToDictionary(m => m.DecodeSignature(provider, null).ParameterTypes.Single(), m => AttributeSummary(reader, m));
+
+        Assert.Equal(new[] { "DefaultOverloadAttribute", "OverloadAttribute(FindByType)" }, overloads["Windows.UI.Xaml.Interop.TypeName"]);
+        Assert.Equal(new[] { "OverloadAttribute(FindByName)" }, overloads["String"]);
+    }
+
+    private static List<string> MethodImplSummary(MetadataReader reader, TypeDefinition type)
+        => type.GetMethodImplementations().Select(reader.GetMethodImplementation).Select(mi =>
+        {
+            var body = reader.GetString(reader.GetMethodDefinition((MethodDefinitionHandle)mi.MethodBody).Name);
+            var decl = reader.GetMemberReference((MemberReferenceHandle)mi.MethodDeclaration);
+            return $"{body} => {FullName(reader, decl.Parent)}::{reader.GetString(decl.Name)}";
+        }).Order(StringComparer.Ordinal).ToList();
+
+    [Fact]
+    public void FlattenedMembers_OfInterfacesInTheSameIdl_GetMethodImpls()
+    {
+        var bytes = CompileAndEmit("""
+            namespace N
+            {
+                interface IGreeter
+                {
+                    String Greet(String name);
+                    Int32 Count { get; };
+                };
+                runtimeclass Greeter : IGreeter { Greeter(); };
+            }
+            """);
+        var reader = ReadRaw(bytes, out var pe); using var _ = pe;
+
+        Assert.Equal(new[] { "Greet => N.IGreeter::Greet", "get_Count => N.IGreeter::get_Count" },
+            MethodImplSummary(reader, FindTypeDef(reader, "Greeter")));
+    }
+
+    [Fact]
+    public void RequiredInterfaces_AreListedAndFlattened_EvenWhenBuiltIn()
+    {
+        // IClosable is also a member-less built-in placeholder; the referenced WinMD's definition must win.
+        var reference = MakeTempWinMd("""
+            namespace Windows.Foundation
+            {
+                interface IClosable { void Close(); };
+            }
+            namespace Ext
+            {
+                interface IStream requires Windows.Foundation.IClosable { Int32 Read(); };
+            }
+            """);
+        var bytes = CompileAndEmit("""
+            namespace N
+            {
+                runtimeclass Stream : Ext.IStream { Stream(); };
+            }
+            """, [reference]);
+        var reader = ReadRaw(bytes, out var pe); using var _ = pe;
+        var stream = FindTypeDef(reader, "Stream");
+
+        var interfaces = stream.GetInterfaceImplementations()
+            .Select(h => FullName(reader, reader.GetInterfaceImplementation(h).Interface)).ToList();
+        Assert.Contains("Ext.IStream", interfaces);
+        Assert.Contains("Windows.Foundation.IClosable", interfaces);
+        Assert.Equal(new[] { "Close => Windows.Foundation.IClosable::Close", "Read => Ext.IStream::Read" },
+            MethodImplSummary(reader, stream));
+    }
+
+    [Fact]
+    public void FlattenedExternalMembers_WithGenericTypes_KeepASingleAritySuffix()
+    {
+        var reference = MakeTempWinMd("""
+            namespace Ext
+            {
+                interface IFlushable { Windows.Foundation.IAsyncOperation<Boolean> FlushAsync(); };
+            }
+            """);
+        var bytes = CompileAndEmit("""
+            namespace N
+            {
+                runtimeclass Sink : Ext.IFlushable { Sink(); };
+            }
+            """, [reference]);
+        var reader = ReadRaw(bytes, out var pe); using var _ = pe;
+
+        var names = reader.TypeReferences.Select(h => reader.GetString(reader.GetTypeReference(h).Name)).ToList();
+        Assert.Contains("IAsyncOperation`1", names);
+        Assert.DoesNotContain(names, n => n.EndsWith("`1`1", StringComparison.Ordinal));
+        var flush = FindTypeDef(reader, "Sink").GetMethods().Select(reader.GetMethodDefinition)
+            .Single(m => reader.GetString(m.Name) == "FlushAsync");
+        Assert.Equal("Windows.Foundation.IAsyncOperation`1<Boolean>", flush.DecodeSignature(new FqSignatureProvider(reader), null).ReturnType);
+    }
+
+    private static List<string> AttributeSummary(MetadataReader reader, MethodDefinition method)
+    {
+        var result = new List<string>();
+        foreach (var h in method.GetCustomAttributes())
+        {
+            var attr = reader.GetCustomAttribute(h);
+            var ctor = reader.GetMemberReference((MemberReferenceHandle)attr.Constructor);
+            var name = reader.GetString(reader.GetTypeReference((TypeReferenceHandle)ctor.Parent).Name);
+            var blob = reader.GetBlobReader(attr.Value);
+            blob.ReadUInt16();
+            result.Add(name == "OverloadAttribute" ? $"{name}({blob.ReadSerializedString()})" : name);
+        }
+        result.Sort(StringComparer.Ordinal);
+        return result;
+    }
+
     // ────────── CLR projection of external TypeRefs ──────────
 
     [Fact]
@@ -494,7 +689,15 @@ public class WinMdParityRealWorldTests : IDisposable
     private sealed class FqSignatureProvider : ISignatureTypeProvider<string, object?>
     {
         private readonly MetadataReader _reader;
-        public FqSignatureProvider(MetadataReader r) => _reader = r;
+        private readonly bool _markValueTypes;
+        public FqSignatureProvider(MetadataReader r, bool markValueTypes = false)
+        {
+            _reader = r;
+            _markValueTypes = markValueTypes;
+        }
+
+        private string Mark(string name, byte kind)
+            => _markValueTypes && kind == (byte)SignatureTypeKind.ValueType ? "valuetype " + name : name;
 
         public string GetPrimitiveType(PrimitiveTypeCode code) => code switch
         {
@@ -515,19 +718,19 @@ public class WinMdParityRealWorldTests : IDisposable
             PrimitiveTypeCode.Object => "Object",
             _ => code.ToString(),
         };
-        public string GetTypeFromDefinition(MetadataReader r, TypeDefinitionHandle h, byte _)
+        public string GetTypeFromDefinition(MetadataReader r, TypeDefinitionHandle h, byte kind)
         {
             var td = r.GetTypeDefinition(h);
             var ns = r.GetString(td.Namespace);
             var n = r.GetString(td.Name);
-            return string.IsNullOrEmpty(ns) ? n : $"{ns}.{n}";
+            return Mark(string.IsNullOrEmpty(ns) ? n : $"{ns}.{n}", kind);
         }
-        public string GetTypeFromReference(MetadataReader r, TypeReferenceHandle h, byte _)
+        public string GetTypeFromReference(MetadataReader r, TypeReferenceHandle h, byte kind)
         {
             var tr = r.GetTypeReference(h);
             var ns = r.GetString(tr.Namespace);
             var n = r.GetString(tr.Name);
-            return string.IsNullOrEmpty(ns) ? n : $"{ns}.{n}";
+            return Mark(string.IsNullOrEmpty(ns) ? n : $"{ns}.{n}", kind);
         }
         public string GetSZArrayType(string e) => $"{e}[]";
         public string GetArrayType(string e, ArrayShape s) => $"{e}[]";

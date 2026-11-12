@@ -257,7 +257,9 @@ public class SymbolTable
     public ISymbol? LookupQualified(string dottedName)
     {
         if (_allDefinedTypes.TryGetValue(dottedName, out var cached))
-            return cached;
+            return cached is InterfaceSymbol { SourceWinMdPath: BuiltInTypes.BuiltInSource } placeholder
+                ? PreferReferencedDefinition(dottedName, placeholder)
+                : cached;
 
         NamespaceSymbol current = _globalNamespace;
         int start = 0;
@@ -285,6 +287,27 @@ public class SymbolTable
 
         return current;
     }
+
+    /// <summary>
+    /// BuiltInTypes registers member-less interface placeholders (IClosable, IStringable, ...) so IDL
+    /// compiles without references. When a referenced WinMD defines the interface, use its real
+    /// definition: a runtime class implementing it (directly or through a required interface, such as
+    /// IRandomAccessStream requiring IClosable) needs its members and MethodImpls, as midl.exe emits them.
+    /// </summary>
+    private ISymbol PreferReferencedDefinition(string fullName, InterfaceSymbol placeholder)
+    {
+        if ((_lazyProviders.Count == 0 && _refDirectories == null) || !_placeholderLookups.Add(fullName))
+            return placeholder;
+
+        _allDefinedTypes.Remove(fullName);
+        if (TryResolveLazy(fullName) is InterfaceSymbol real)
+            return real;
+        _allDefinedTypes[fullName] = placeholder;
+        return placeholder;
+    }
+
+    // Built-in placeholders already checked against the referenced WinMDs.
+    private readonly HashSet<string> _placeholderLookups = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Register a type alias (e.g., HSTRING → String, DWORD → UInt32).

@@ -36,7 +36,10 @@ public class WinMdReader
         var symbols = new List<ISymbol>();
 
         using var peReader = new PEReader(new MemoryStream(winmdBytes));
-        var mdReader = peReader.GetMetadataReader();
+        // Raw metadata: the default options apply the WinRT->CLR projection, which renames
+        // referenced types in signatures (TypeName -> System.Type, IVector`1 -> IList`1, ...).
+        // Those CLR names must never reach WinMIDL's output.
+        var mdReader = peReader.GetMetadataReader(MetadataReaderOptions.None);
 
         foreach (var typeDefHandle in mdReader.TypeDefinitions)
         {
@@ -446,7 +449,31 @@ public class WinMdReader
             });
         }
 
+        // Overload metadata, so members flattened onto a runtime class keep it (as midl.exe does).
+        // Same convention as [overload("...")] in IDL: OverloadGroup holds the OverloadAttribute value.
+        foreach (var attrHandle in method.GetCustomAttributes())
+        {
+            var attr = mdReader.GetCustomAttribute(attrHandle);
+            switch (GetAttributeTypeName(mdReader, attr.Constructor))
+            {
+                case "OverloadAttribute":
+                    symbol.OverloadGroup = ReadFirstStringArgument(mdReader, attr) ?? symbol.OverloadGroup;
+                    break;
+                case "DefaultOverloadAttribute":
+                    symbol.IsDefaultOverload = true;
+                    break;
+            }
+        }
+
         return symbol;
+    }
+
+    private static string? ReadFirstStringArgument(MetadataReader mdReader, CustomAttribute attr)
+    {
+        var blob = mdReader.GetBlobReader(attr.Value);
+        if (blob.Length < 3 || blob.ReadUInt16() != 1) return null; // prolog
+        try { return blob.ReadSerializedString(); }
+        catch (BadImageFormatException) { return null; }
     }
 
     private static PropertySymbol ReadProperty(
@@ -529,16 +556,18 @@ public class WinMdReader
                     break;
 
                 case "AttributeUsageAttribute":
-                    // WinMD files store System.AttributeTargets (CLR) values in the blob,
-                    // even though the type is Windows.Foundation.Metadata.AttributeUsageAttribute.
-                    // The .NET metadata reader projects the WinRT type to System.AttributeUsageAttribute,
-                    // and the blob values are CLR AttributeTargets flags.
+                    // Metadata is read raw (no WinRT projection), so the value is whatever the WinMD
+                    // stores: Windows.Foundation.Metadata.AttributeTargets flags for WinRT attributes,
+                    // System.AttributeTargets flags for System.AttributeUsageAttribute.
                     try
                     {
                         if (blob.RemainingBytes >= 4)
                         {
                             var targets = blob.ReadInt32();
-                            ApplyClrAttributeUsageTargets(symbol, targets);
+                            if (GetAttributeTypeNamespace(mdReader, attr.Constructor) == "System")
+                                ApplyClrAttributeUsageTargets(symbol, targets);
+                            else
+                                ApplyAttributeUsageTargets(symbol, targets);
                         }
                     }
                     catch { }
@@ -626,6 +655,8 @@ public class WinMdReader
         const int TargetRuntimeClass = 512;
         const int TargetStruct = 1024;
         const int TargetApiContract = 8192;
+
+        if (targets == -1) return; // All: don't restrict
 
         if ((targets & TargetDelegate) != 0) symbol.ValidTargets.Add("target_delegate");
         if ((targets & TargetEnum) != 0) symbol.ValidTargets.Add("target_enum");
@@ -1012,17 +1043,24 @@ public class WinMdReader
         if (isArray)
             typeName = typeName[..^2];
 
+        // MidlSignatureTypeProvider marks ELEMENT_TYPE_VALUETYPE references.
+        bool isValueType = typeName.StartsWith(ValueTypePrefix, StringComparison.Ordinal);
+        if (isValueType)
+            typeName = typeName[ValueTypePrefix.Length..];
+
         int angleBracket = typeName.IndexOf('<');
         if (angleBracket > 0 && typeName.EndsWith('>'))
         {
             var baseName = typeName[..angleBracket];
             var argsString = typeName[(angleBracket + 1)..^1];
             var typeArgs = ParseTypeArguments(argsString);
-            return new TypeRef(baseName, typeArgs, isArray);
+            return new TypeRef(baseName, typeArgs, isArray) { IsValueType = isValueType };
         }
 
-        return new TypeRef(typeName, isArray: isArray);
+        return new TypeRef(typeName, isArray: isArray) { IsValueType = isValueType };
     }
+
+    private const string ValueTypePrefix = "valuetype ";
 
     private static List<TypeRef> ParseTypeArguments(string argsString)
     {
@@ -1085,7 +1123,7 @@ public class WinMdReader
             var td = reader.GetTypeDefinition(handle);
             var ns = reader.GetString(td.Namespace);
             var name = reader.GetString(td.Name);
-            return string.IsNullOrEmpty(ns) ? name : $"{ns}.{name}";
+            return Mark(string.IsNullOrEmpty(ns) ? name : $"{ns}.{name}", rawTypeKind);
         }
 
         public string GetTypeFromReference(MetadataReader reader, TypeReferenceHandle handle, byte rawTypeKind)
@@ -1093,8 +1131,12 @@ public class WinMdReader
             var tr = reader.GetTypeReference(handle);
             var ns = reader.GetString(tr.Namespace);
             var name = reader.GetString(tr.Name);
-            return string.IsNullOrEmpty(ns) ? name : $"{ns}.{name}";
+            return Mark(string.IsNullOrEmpty(ns) ? name : $"{ns}.{name}", rawTypeKind);
         }
+
+        // ParseTypeRef turns the marker into TypeRef.IsValueType.
+        private static string Mark(string fullName, byte rawTypeKind)
+            => rawTypeKind == (byte)SignatureTypeKind.ValueType ? ValueTypePrefix + fullName : fullName;
 
         public string GetSZArrayType(string elementType) => $"{elementType}[]";
         public string GetArrayType(string elementType, ArrayShape shape) => $"{elementType}[]";

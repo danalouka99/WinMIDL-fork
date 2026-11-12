@@ -20,6 +20,13 @@ public class TypeRef
     public ISymbol? ResolvedSymbol { get; set; }
     public int Position { get; init; }
 
+    /// <summary>
+    /// True when a signature read from a referenced WinMD encodes this type as a value type
+    /// (ELEMENT_TYPE_VALUETYPE). Lets unresolved external structs and enums keep their
+    /// valuetype encoding when re-emitted (for example in flattened interface members).
+    /// </summary>
+    public bool IsValueType { get; init; }
+
     /// <summary>When reading from WinMD InterfaceImpl rows, indicates this is a [default] interface.</summary>
     public bool IsDefaultInterface { get; set; }
     /// <summary>When reading from WinMD InterfaceImpl rows, indicates this is a [protected] interface.</summary>
@@ -38,6 +45,7 @@ public class TypeRef
     public TypeRef WithArray() => new(Name, TypeArguments, isArray: true)
     {
         IsBuiltIn = IsBuiltIn,
+        IsValueType = IsValueType,
         Position = Position,
         ArrayRank = 1,
         ArrayLength = null,

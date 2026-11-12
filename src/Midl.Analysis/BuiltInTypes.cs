@@ -13,7 +13,7 @@ namespace Midl.Analysis;
 /// </summary>
 public static class BuiltInTypes
 {
-    private const string BuiltInSource = "<built-in>";
+    internal const string BuiltInSource = "<built-in>";
 
     // Detached namespace cache so multiple types in the same namespace share one instance
     // ThreadStatic to avoid races when parallel tests call Register concurrently

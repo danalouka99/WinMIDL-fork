@@ -270,6 +270,12 @@ public class WinMdEmitter
     /// </summary>
     private TypeReferenceHandle GetExternalTypeRef(string fullName, int genericArity = 0)
     {
+        // Names read from a WinMD already carry the arity suffix (IVector`1); IDL names do not.
+        // Normalize so both spellings share one TypeRef row and the suffix is never doubled.
+        var aritySuffix = $"`{genericArity}";
+        if (genericArity > 0 && fullName.EndsWith(aritySuffix, StringComparison.Ordinal))
+            fullName = fullName[..^aritySuffix.Length];
+
         var cacheKey = genericArity > 0 ? $"{fullName}`{genericArity}" : fullName;
         if (_localTypeRefs.TryGetValue(cacheKey, out var existing))
             return existing;

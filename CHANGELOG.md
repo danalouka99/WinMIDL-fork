@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+- **Runtime classes that implement an interface from another WinMD keep that interface's ABI**, matching `midl.exe`. For example, a class that implements `Microsoft.UI.Xaml.Markup.IXamlMetadataProvider` got `GetXamlType(System.Type)` in its WinMD, which no WinRT consumer can resolve
+  - Referenced WinMDs are read without the .NET WinRT-to-CLR projection, so flattened member signatures no longer contain CLR names such as `System.Type` (for `TypeName`), `System.Uri` or ``IList`1``
+  - External structs and enums in those signatures keep their `valuetype` encoding (`TypeName`, `XmlnsDefinition[]`)
+  - Every flattened member gets a MethodImpl to the interface member (a MemberRef on the interface TypeRef), for interfaces from other WinMDs and from the same IDL
+  - `[overload]` and `[default_overload]` of the interface methods are copied onto the class methods
+  - The class lists the interfaces its explicit interfaces require (`IClosable`, `IInputStream` and `IOutputStream` for `IRandomAccessStream`) and flattens their members. Built-in interfaces such as `IClosable` use the referenced WinMD's definition, so `Close()` is no longer dropped
+  - Generic types in flattened signatures no longer get a doubled arity suffix (``IAsyncOperation`1`1``)
+- `[attributeusage]` targets of attributes from referenced WinMDs are decoded from the WinRT `AttributeTargets` value the WinMD stores
+
 ## v0.1.19 (2026-09-04)
 
 ### Bug Fixes
