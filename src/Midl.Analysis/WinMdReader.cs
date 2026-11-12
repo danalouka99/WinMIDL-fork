@@ -444,7 +444,12 @@ public class WinMdReader
         foreach (var paramHandle in method.GetParameters())
         {
             var param = mdReader.GetParameter(paramHandle);
-            if (param.SequenceNumber == 0) continue;
+            if (param.SequenceNumber == 0)
+            {
+                // Kept so a runtime class's stub for this method names its return value the same way.
+                symbol.ReturnParameterName = mdReader.GetString(param.Name);
+                continue;
+            }
             var paramName = mdReader.GetString(param.Name);
             var paramType = param.SequenceNumber <= sig.ParameterTypes.Length
                 ? sig.ParameterTypes[param.SequenceNumber - 1]

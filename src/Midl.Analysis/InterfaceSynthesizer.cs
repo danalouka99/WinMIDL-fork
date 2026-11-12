@@ -20,7 +20,47 @@ public partial class InterfaceSynthesizer
                 SynthesizeForClass(rc);
             }
         }
+
+        foreach (var type in compilation.GetAllTypes().ToList())
+        {
+            if (type is RuntimeClassSymbol rc)
+            {
+                foreach (var iface in rc.ImplementedInterfaces)
+                    AssignOverloadSetAbiNames(iface);
+            }
+            else if (type is InterfaceSymbol { IsExternal: false, IsSynthesized: false } iface)
+            {
+                AssignOverloadSetAbiNames(iface);
+            }
+        }
     }
+
+    /// <summary>
+    /// midl.exe gives the methods of one interface that share a name distinct ABI names: the first keeps
+    /// its name and the n-th unnamed one becomes Name{n}, unless [method_name] names it. Each gets an
+    /// OverloadAttribute with its ABI name. Methods with [overload("X")] already have unique names.
+    /// </summary>
+    internal static void AssignOverloadSetAbiNames(InterfaceSymbol iface)
+    {
+        var sets = iface.Members.OfType<MethodSymbol>()
+            .Where(m => m.OverloadGroup == null)
+            .GroupBy(m => m.Name, StringComparer.Ordinal)
+            .Where(g => g.Count() > 1);
+        foreach (var set in sets)
+        {
+            int unnamed = 0;
+            foreach (var method in set)
+            {
+                method.IsInOverloadSet = true;
+                if (method.MethodNameOverride != null) continue;
+                unnamed++;
+                method.MethodNameOverride = unnamed == 1 ? method.Name : $"{method.Name}{unnamed}";
+            }
+        }
+    }
+
+    private static string? GetStringAttribute(List<AttributeData> attributes, string name) =>
+        attributes.FirstOrDefault(a => a.Name.Equals(name, StringComparison.OrdinalIgnoreCase))?.GetString(0);
 
     private void SynthesizeForClass(RuntimeClassSymbol rc)
     {
@@ -117,13 +157,23 @@ public partial class InterfaceSynthesizer
                 ns);
             var group = factoryGroups[groupIndex];
             var factoryMembers = new List<ISymbol>();
+            // midl.exe names the factory methods CreateInstance, CreateInstance2, ... (counting the
+            // constructors without [method_name]) and their return value "value" unless [return_name].
+            int unnamed = 0;
             foreach (var ctor in group.Members.Cast<ConstructorSymbol>())
             {
-                var factoryMethod = new MethodSymbol("CreateInstance", null)
+                var methodName = GetStringAttribute(ctor.Attributes, "method_name");
+                if (methodName == null)
+                {
+                    unnamed++;
+                    methodName = unnamed == 1 ? "CreateInstance" : $"CreateInstance{unnamed}";
+                }
+                var factoryMethod = new MethodSymbol(methodName, null)
                 {
                     ReturnType = new TypeRef(rc.Name) { ResolvedSymbol = rc },
                     ContractName = group.ContractName,
                     ContractVersion = group.ContractVersion,
+                    ReturnNameOverride = GetStringAttribute(ctor.Attributes, "return_name") ?? "value",
                 };
                 factoryMethod.Parameters.AddRange(ctor.Parameters);
                 factoryMembers.Add(factoryMethod);

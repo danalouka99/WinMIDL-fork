@@ -404,7 +404,7 @@ public class HeaderEmitter
         }
 
         var paramStr = string.Join(", ", paramParts);
-        sb.AppendLine($"    virtual HRESULT STDMETHODCALLTYPE {method.Name}({paramStr}) = 0;");
+        sb.AppendLine($"    virtual HRESULT STDMETHODCALLTYPE {method.AbiName}({paramStr}) = 0;");
     }
 
     private static void ExpandArrayParam(List<string> parts, ParameterSymbol p)

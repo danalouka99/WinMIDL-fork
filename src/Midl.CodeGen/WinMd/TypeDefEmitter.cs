@@ -1229,8 +1229,8 @@ internal class TypeDefEmitter
             EmitArrayParamAttribute(paramHandle, method.Parameters[i]);
         }
 
-        if (method.OverloadGroup != null)
-            _attrs.AddOverloadAttribute(handle, method.Name);
+        if (method.OverloadAttributeValue is { } overloadName)
+            _attrs.AddOverloadAttribute(handle, overloadName);
         if (method.IsDefaultOverload)
             _attrs.AddDefaultOverloadAttribute(handle);
 
@@ -1269,6 +1269,7 @@ internal class TypeDefEmitter
                 -1,
                 _emitter.NextParamHandle);
             _emitter.IncrementMethodRow();
+            AddReturnValueParam("value");
 
             // NoExceptionAttribute on property getter
             if (prop.Attributes.Any(a => a.Name.Equals("noexcept", StringComparison.OrdinalIgnoreCase)))
@@ -1325,6 +1326,7 @@ internal class TypeDefEmitter
             -1,
             _emitter.NextParamHandle);
         _emitter.IncrementMethodRow();
+        AddReturnValueParam("token");
 
         M.AddParameter(ParameterAttributes.In, M.GetOrAddString("handler"), 1);
         _emitter.IncrementParamRow();
@@ -1488,18 +1490,12 @@ internal class TypeDefEmitter
             EmitArrayParamAttribute(paramHandle, method.Parameters[i]);
         }
 
-        if (method.OverloadGroup != null)
-            _attrs.AddOverloadAttribute(methodDef, method.Name);
+        // OverloadAttribute holds the ABI name ([overload], [method_name], overload sets); midl.exe has no
+        // metadata attribute for [method_name] or [return_name].
+        if (method.OverloadAttributeValue is { } overloadName)
+            _attrs.AddOverloadAttribute(methodDef, overloadName);
         if (method.IsDefaultOverload)
             _attrs.AddDefaultOverloadAttribute(methodDef);
-
-        // MethodNameAttribute
-        if (method.MethodNameOverride != null)
-            _attrs.AddMethodNameAttribute(methodDef, method.MethodNameOverride);
-
-        // ReturnNameAttribute
-        if (method.ReturnNameOverride != null)
-            _attrs.AddReturnNameAttribute(methodDef, method.ReturnNameOverride);
 
         // NoExceptionAttribute
         if (method.Attributes.Any(a => a.Name.Equals("noexcept", StringComparison.OrdinalIgnoreCase)))
@@ -1534,6 +1530,7 @@ internal class TypeDefEmitter
             -1,
             paramList);
         _emitter.IncrementMethodRow();
+        AddReturnValueParam("value");
 
         // NoExceptionAttribute on property getter
         if (prop.Attributes.Any(a => a.Name.Equals("noexcept", StringComparison.OrdinalIgnoreCase)))
@@ -1582,6 +1579,7 @@ internal class TypeDefEmitter
             -1,
             _emitter.NextParamHandle);
         _emitter.IncrementMethodRow();
+        AddReturnValueParam("token");
 
         M.AddParameter(ParameterAttributes.In, M.GetOrAddString("handler"), 1);
         _emitter.IncrementParamRow();
@@ -1880,7 +1878,20 @@ internal class TypeDefEmitter
         if (method.ReturnType.Name == "void")
             return null;
 
+        if (!string.IsNullOrEmpty(method.ReturnNameOverride))
+            return method.ReturnNameOverride;
+        if (!string.IsNullOrEmpty(method.ReturnParameterName))
+            return method.ReturnParameterName;
+
         return IsAsyncReturnType(method.ReturnType) ? "operation" : "result";
+    }
+
+    // midl.exe writes a Param row (sequence 0) for the return value of every property getter ("value")
+    // and event adder ("token"), in interfaces and on runtime class stubs.
+    private void AddReturnValueParam(string name)
+    {
+        M.AddParameter(ParameterAttributes.None, M.GetOrAddString(name), 0);
+        _emitter.IncrementParamRow();
     }
 
     private static bool IsAsyncReturnType(TypeRef returnType)
@@ -1992,7 +2003,7 @@ internal class TypeDefEmitter
             switch (member)
             {
                 case MethodSymbol method:
-                    AppendMethodSeed(sb, method.Name, method.Parameters, method.ReturnType);
+                    AppendMethodSeed(sb, method.AbiName, method.Parameters, method.ReturnType);
                     break;
                 case PropertySymbol prop:
                     // getter: HRESULT get_Name(Type*);

@@ -67,7 +67,7 @@ public static class AbiGuidComputer
             switch (member)
             {
                 case MethodSymbol method:
-                    AppendMethodSeed(sb, method.Name, method.Parameters, method.ReturnType);
+                    AppendMethodSeed(sb, method.AbiName, method.Parameters, method.ReturnType);
                     break;
                 case PropertySymbol prop:
                     AppendMethodSeed(sb, $"get_{prop.Name}", [], prop.Type);

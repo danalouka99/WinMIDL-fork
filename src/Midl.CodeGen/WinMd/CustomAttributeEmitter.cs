@@ -42,8 +42,6 @@ internal class CustomAttributeEmitter
     private MemberReferenceHandle? _overridableCtorRef;
     private MemberReferenceHandle? _protectedCtorRef;
     private MemberReferenceHandle? _experimentalCtorRef;
-    private MemberReferenceHandle? _methodNameCtorRef;
-    private MemberReferenceHandle? _returnNameCtorRef;
     private MemberReferenceHandle? _noExceptionCtorRef;
     private MemberReferenceHandle? _remoteAsyncCtorRef;
     private MemberReferenceHandle? _attributeUsageCtorRef;
@@ -379,30 +377,6 @@ internal class CustomAttributeEmitter
             Array.Empty<Action<SignatureTypeEncoder>>());
         var blob = EncodeParameterlessAttribute();
         Metadata.AddCustomAttribute(parent, _experimentalCtorRef.Value, Metadata.GetOrAddBlob(blob));
-    }
-
-    public void AddMethodNameAttribute(EntityHandle parent, string name)
-    {
-        _methodNameCtorRef ??= CreateWfmCtorRef("MethodNameAttribute",
-            new Action<SignatureTypeEncoder>[] { e => e.String() });
-
-        var blob = new BlobBuilder();
-        blob.WriteUInt16(0x0001); // prolog
-        blob.WriteSerializedString(name);
-        blob.WriteUInt16(0x0000); // named args
-        Metadata.AddCustomAttribute(parent, _methodNameCtorRef.Value, Metadata.GetOrAddBlob(blob));
-    }
-
-    public void AddReturnNameAttribute(EntityHandle parent, string name)
-    {
-        _returnNameCtorRef ??= CreateWfmCtorRef("ReturnNameAttribute",
-            new Action<SignatureTypeEncoder>[] { e => e.String() });
-
-        var blob = new BlobBuilder();
-        blob.WriteUInt16(0x0001); // prolog
-        blob.WriteSerializedString(name);
-        blob.WriteUInt16(0x0000); // named args
-        Metadata.AddCustomAttribute(parent, _returnNameCtorRef.Value, Metadata.GetOrAddBlob(blob));
     }
 
     public void AddNoExceptionAttribute(EntityHandle parent)

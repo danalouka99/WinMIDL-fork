@@ -655,6 +655,147 @@ public class WinMdParityRealWorldTests : IDisposable
         Assert.Equal("N.LabContract v2", ContractSummary(reader, changed.GetCustomAttributes()));
     }
 
+    private static Guid GuidOf(MetadataReader reader, TypeDefinition type)
+    {
+        foreach (var h in type.GetCustomAttributes())
+        {
+            var attr = reader.GetCustomAttribute(h);
+            var ctor = reader.GetMemberReference((MemberReferenceHandle)attr.Constructor);
+            if (reader.GetString(reader.GetTypeReference((TypeReferenceHandle)ctor.Parent).Name) != "GuidAttribute")
+                continue;
+            var blob = reader.GetBlobReader(attr.Value);
+            blob.ReadUInt16();
+            return new Guid(blob.ReadUInt32(), blob.ReadUInt16(), blob.ReadUInt16(), blob.ReadByte(), blob.ReadByte(),
+                blob.ReadByte(), blob.ReadByte(), blob.ReadByte(), blob.ReadByte(), blob.ReadByte(), blob.ReadByte());
+        }
+        throw new Xunit.Sdk.XunitException("no GuidAttribute");
+    }
+
+    [Fact]
+    public void OverloadSets_GetMidlAbiNames_AndIidsFromThem()
+    {
+        // midl.exe: methods of one interface that share a name get ABI names Show, Show2, ...
+        // (or their [method_name]); OverloadAttribute holds the ABI name and the IID is computed from it.
+        var bytes = CompileAndEmit("""
+            namespace N
+            {
+                [contractversion(2)]
+                apicontract C {};
+
+                [contract(C, 1)]
+                runtimeclass W
+                {
+                    W();
+                    void Show(Int32 x);
+                    void Show(Int32 x, Int32 y);
+                    [method_name("ShowAll")] void Show(Int32 x, Int32 y, Int32 z);
+                    static void Make(Int32 x);
+                    static void Make(Int32 x, Int32 y);
+                    [contract(C, 2)]
+                    {
+                        void Show(String s, String t, String u, String v);
+                    }
+                };
+            }
+            """);
+        var reader = ReadRaw(bytes, out var pe); using var _ = pe;
+
+        Assert.Equal(new Guid("54c63275-791e-5e08-8062-bcea39813912"), GuidOf(reader, FindTypeDef(reader, "IW")));
+        Assert.Equal(new Guid("e404b4a5-fa7b-5805-9c01-259460f7d1af"), GuidOf(reader, FindTypeDef(reader, "IW2")));
+        Assert.Equal(new Guid("6a824486-50df-56b1-a2e3-a1006fce8d87"), GuidOf(reader, FindTypeDef(reader, "IWStatics")));
+        var stubs = FindTypeDef(reader, "W").GetMethods().Select(reader.GetMethodDefinition)
+            .Where(m => reader.GetString(m.Name) is "Show" or "Make")
+            .Select(m => AttributeSummary(reader, m).SingleOrDefault(a => a.StartsWith("OverloadAttribute", StringComparison.Ordinal)) ?? "(none)")
+            .ToList();
+        Assert.Equal(new[] { "OverloadAttribute(Show)", "OverloadAttribute(Show2)", "OverloadAttribute(ShowAll)", "(none)",
+            "OverloadAttribute(Make)", "OverloadAttribute(Make2)" }, stubs);
+    }
+
+    [Fact]
+    public void OverloadSets_CountOnlyMethodsWithoutMethodName()
+    {
+        var bytes = CompileAndEmit("""
+            namespace N
+            {
+                [default_interface]
+                runtimeclass W
+                {
+                    void Show(Int32 x);
+                    [method_name("ShowTwo")] void Show(Int32 x, Int32 y);
+                    void Show(Int32 x, Int32 y, Int32 z);
+                };
+            }
+            """);
+        var reader = ReadRaw(bytes, out var pe); using var _ = pe;
+        var iface = FindTypeDef(reader, "IW");
+
+        Assert.Equal(new Guid("316d4bd3-49ce-51f5-9349-cce2b2b00734"), GuidOf(reader, iface));
+        Assert.Equal(new[] { "OverloadAttribute(Show)", "OverloadAttribute(ShowTwo)", "OverloadAttribute(Show2)" },
+            iface.GetMethods().Select(reader.GetMethodDefinition).Select(m => AttributeSummary(reader, m).Single()));
+    }
+
+    [Fact]
+    public void FactoryMethods_GetMidlNames_ReturnNames_AndIid()
+    {
+        // midl.exe: CreateInstance, CreateInstance2, ... counting the constructors without
+        // [method_name]; the return value is "value" unless [return_name]; no OverloadAttribute.
+        var bytes = CompileAndEmit("""
+            namespace N
+            {
+                [default_interface]
+                runtimeclass W
+                {
+                    W(Int32 x);
+                    W(Int32 x, Int32 y);
+                    [method_name("CreateWithName")] W(String name, Int32 a, Int32 b);
+                    [return_name("instance")] W(Int32 a, Int32 b, Int32 c, Int32 d);
+                };
+            }
+            """);
+        var reader = ReadRaw(bytes, out var pe); using var _ = pe;
+        var factory = FindTypeDef(reader, "IWFactory");
+
+        Assert.Equal(new Guid("3ab28aaf-6a51-5ff2-84a7-dcc6c781c074"), GuidOf(reader, FindTypeDef(reader, "IW")));
+        Assert.Equal(new Guid("6229565f-e301-59ee-bcf1-c43f0aefe658"), GuidOf(reader, factory));
+        var methods = factory.GetMethods().Select(reader.GetMethodDefinition).ToList();
+        Assert.Equal(new[] { "CreateInstance", "CreateInstance2", "CreateWithName", "CreateInstance3" },
+            methods.Select(m => reader.GetString(m.Name)));
+        Assert.Equal(new[] { "value", "value", "value", "instance" },
+            methods.Select(m => reader.GetString(reader.GetParameter(m.GetParameters().First()).Name)));
+        Assert.All(methods, m => Assert.Empty(AttributeSummary(reader, m)));
+    }
+
+    [Fact]
+    public void GettersAndEventAdders_HaveMidlReturnValueRows()
+    {
+        var bytes = CompileAndEmit("""
+            namespace N
+            {
+                delegate void Handler(Int32 x);
+                runtimeclass Widget
+                {
+                    Int32 Count { get; };
+                    static Int32 Total { get; };
+                    event Handler Changed;
+                };
+            }
+            """);
+        var reader = ReadRaw(bytes, out var pe); using var _ = pe;
+
+        foreach (var typeName in new[] { "Widget", "IWidget", "IWidgetStatics" })
+        {
+            foreach (var m in FindTypeDef(reader, typeName).GetMethods().Select(reader.GetMethodDefinition))
+            {
+                var name = reader.GetString(m.Name);
+                var expected = name.StartsWith("get_", StringComparison.Ordinal) ? "value"
+                    : name.StartsWith("add_", StringComparison.Ordinal) ? "token" : null;
+                var returnRow = m.GetParameters().Select(reader.GetParameter).Where(p => p.SequenceNumber == 0)
+                    .Select(p => reader.GetString(p.Name)).SingleOrDefault();
+                Assert.Equal(expected, returnRow);
+            }
+        }
+    }
+
     private static List<string> AttributeSummary(MetadataReader reader, MethodDefinition method)
     {
         var result = new List<string>();

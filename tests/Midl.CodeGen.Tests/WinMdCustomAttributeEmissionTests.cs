@@ -113,8 +113,10 @@ public class WinMdCustomAttributeEmissionTests
     }
 
     [Fact]
-    public void Emit_MethodNameAttribute_InWinMd()
+    public void Emit_MethodName_IsWrittenAsOverloadAttribute()
     {
+        // midl.exe writes [method_name("X")] as OverloadAttribute("X"); Windows.Foundation.Metadata has
+        // no MethodNameAttribute.
         var bytes = CompileAndEmit("""
             namespace N
             {
@@ -131,15 +133,34 @@ public class WinMdCustomAttributeEmissionTests
         {
             var ifaceHandle = FindTypeDef(reader, "IWidget");
             var methodHandle = FindMethod(reader, ifaceHandle, "DoWork");
-            Assert.True(HasCustomAttribute(reader, methodHandle,
-                "Windows.Foundation.Metadata.MethodNameAttribute"),
-                "MethodNameAttribute should be emitted on DoWork");
+            Assert.Equal("DoWorkInternal", OverloadValue(reader, methodHandle));
+            Assert.False(HasCustomAttribute(reader, methodHandle,
+                "Windows.Foundation.Metadata.MethodNameAttribute"));
         }
     }
 
-    [Fact]
-    public void Emit_ReturnNameAttribute_InWinMd()
+    private static string? OverloadValue(MetadataReader reader, MethodDefinitionHandle method)
     {
+        foreach (var attrHandle in reader.GetCustomAttributes(method))
+        {
+            var attr = reader.GetCustomAttribute(attrHandle);
+            if (attr.Constructor.Kind != HandleKind.MemberReference) continue;
+            var memberRef = reader.GetMemberReference((MemberReferenceHandle)attr.Constructor);
+            if (memberRef.Parent.Kind != HandleKind.TypeReference) continue;
+            var typeRef = reader.GetTypeReference((TypeReferenceHandle)memberRef.Parent);
+            if (reader.GetString(typeRef.Name) != "OverloadAttribute") continue;
+            var blobReader = reader.GetBlobReader(attr.Value);
+            blobReader.ReadUInt16(); // prolog
+            return blobReader.ReadSerializedString();
+        }
+        return null;
+    }
+
+    [Fact]
+    public void Emit_ReturnName_NamesTheReturnValueParam()
+    {
+        // midl.exe uses [return_name] for the return value's Param row and writes no attribute:
+        // Windows.Foundation.Metadata has no ReturnNameAttribute.
         var bytes = CompileAndEmit("""
             namespace N
             {
@@ -156,10 +177,20 @@ public class WinMdCustomAttributeEmissionTests
         {
             var ifaceHandle = FindTypeDef(reader, "IWidget");
             var methodHandle = FindMethod(reader, ifaceHandle, "GetValue");
-            Assert.True(HasCustomAttribute(reader, methodHandle,
-                "Windows.Foundation.Metadata.ReturnNameAttribute"),
-                "ReturnNameAttribute should be emitted on GetValue");
+            Assert.Equal("result2", ReturnParamName(reader, methodHandle));
+            Assert.False(HasCustomAttribute(reader, methodHandle,
+                "Windows.Foundation.Metadata.ReturnNameAttribute"));
         }
+    }
+
+    private static string? ReturnParamName(MetadataReader reader, MethodDefinitionHandle method)
+    {
+        foreach (var h in reader.GetMethodDefinition(method).GetParameters())
+        {
+            var p = reader.GetParameter(h);
+            if (p.SequenceNumber == 0) return reader.GetString(p.Name);
+        }
+        return null;
     }
 
     [Fact]
@@ -432,12 +463,12 @@ public class WinMdCustomAttributeEmissionTests
     }
 
     [Fact]
-    public void Emit_MethodNameAttribute_HasStringArgument()
+    public void Emit_MethodName_OnClassMethod_IsWrittenOnInterfaceAndStub()
     {
         var bytes = CompileAndEmit("""
             namespace N
             {
-                interface IWidget
+                runtimeclass Widget
                 {
                     [method_name("DoWorkInternal")]
                     void DoWork();
@@ -448,35 +479,18 @@ public class WinMdCustomAttributeEmissionTests
         var reader = CreateReader(bytes, out var pe);
         using (pe)
         {
-            var ifaceHandle = FindTypeDef(reader, "IWidget");
-            var methodHandle = FindMethod(reader, ifaceHandle, "DoWork");
-
-            foreach (var attrHandle in reader.GetCustomAttributes(methodHandle))
-            {
-                var attr = reader.GetCustomAttribute(attrHandle);
-                if (attr.Constructor.Kind != HandleKind.MemberReference) continue;
-                var memberRef = reader.GetMemberReference((MemberReferenceHandle)attr.Constructor);
-                if (memberRef.Parent.Kind != HandleKind.TypeReference) continue;
-                var typeRef = reader.GetTypeReference((TypeReferenceHandle)memberRef.Parent);
-                if (reader.GetString(typeRef.Name) != "MethodNameAttribute") continue;
-
-                var blobReader = reader.GetBlobReader(attr.Value);
-                blobReader.ReadUInt16(); // prolog
-                var strValue = blobReader.ReadSerializedString();
-                Assert.Equal("DoWorkInternal", strValue);
-                return;
-            }
-            Assert.Fail("MethodNameAttribute not found on DoWork");
+            Assert.Equal("DoWorkInternal", OverloadValue(reader, FindMethod(reader, FindTypeDef(reader, "IWidget"), "DoWork")));
+            Assert.Equal("DoWorkInternal", OverloadValue(reader, FindMethod(reader, FindTypeDef(reader, "Widget"), "DoWork")));
         }
     }
 
     [Fact]
-    public void Emit_ReturnNameAttribute_HasStringArgument()
+    public void Emit_ReturnName_NamesTheClassStubReturnValueParam()
     {
         var bytes = CompileAndEmit("""
             namespace N
             {
-                interface IWidget
+                runtimeclass Widget
                 {
                     [return_name("alt")]
                     Int32 GetValue();
@@ -487,25 +501,8 @@ public class WinMdCustomAttributeEmissionTests
         var reader = CreateReader(bytes, out var pe);
         using (pe)
         {
-            var ifaceHandle = FindTypeDef(reader, "IWidget");
-            var methodHandle = FindMethod(reader, ifaceHandle, "GetValue");
-
-            foreach (var attrHandle in reader.GetCustomAttributes(methodHandle))
-            {
-                var attr = reader.GetCustomAttribute(attrHandle);
-                if (attr.Constructor.Kind != HandleKind.MemberReference) continue;
-                var memberRef = reader.GetMemberReference((MemberReferenceHandle)attr.Constructor);
-                if (memberRef.Parent.Kind != HandleKind.TypeReference) continue;
-                var typeRef = reader.GetTypeReference((TypeReferenceHandle)memberRef.Parent);
-                if (reader.GetString(typeRef.Name) != "ReturnNameAttribute") continue;
-
-                var blobReader = reader.GetBlobReader(attr.Value);
-                blobReader.ReadUInt16(); // prolog
-                var strValue = blobReader.ReadSerializedString();
-                Assert.Equal("alt", strValue);
-                return;
-            }
-            Assert.Fail("ReturnNameAttribute not found on GetValue");
+            Assert.Equal("alt", ReturnParamName(reader, FindMethod(reader, FindTypeDef(reader, "IWidget"), "GetValue")));
+            Assert.Equal("alt", ReturnParamName(reader, FindMethod(reader, FindTypeDef(reader, "Widget"), "GetValue")));
         }
     }
 
@@ -605,9 +602,7 @@ public class WinMdCustomAttributeEmissionTests
             Assert.True(HasCustomAttribute(reader, methodHandle,
                 "Windows.Foundation.Metadata.NoExceptionAttribute"),
                 "NoExceptionAttribute should be emitted on DoWork");
-            Assert.True(HasCustomAttribute(reader, methodHandle,
-                "Windows.Foundation.Metadata.MethodNameAttribute"),
-                "MethodNameAttribute should be emitted on DoWork");
+            Assert.Equal("Fast", OverloadValue(reader, methodHandle));
         }
     }
 
