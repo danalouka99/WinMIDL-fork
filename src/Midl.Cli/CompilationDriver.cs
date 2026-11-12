@@ -358,7 +358,7 @@ public class CompilationDriver
             }
         }
 
-        if (!options.NoIid)
+        if (!options.NoIid && !options.NoMidl)
         {
             var iidEmitter = new IidEmitter();
             var iidContent = iidEmitter.Emit(compilation);
@@ -422,7 +422,9 @@ public class CompilationDriver
             }
         }
 
-        if (!options.NoDllData)
+        // /nomidl (midl.exe): write only the .winmd and the header, even when /iid, /proxy or
+        // /dlldata name files. The OS build passes all of them for every WinRT IDL directory.
+        if (!options.NoDllData && !options.NoMidl)
         {
             var dllDataEmitter = new DllDataEmitter();
             var dllDataContent = dllDataEmitter.Emit(compilation);
@@ -434,7 +436,7 @@ public class CompilationDriver
             }
         }
 
-        if (!options.NoProxy)
+        if (!options.NoProxy && !options.NoMidl)
         {
             var stubEmitter = new StubEmitter();
             var stubContent = stubEmitter.Emit(compilation);
@@ -785,7 +787,7 @@ public class CompilationDriver
         _out.WriteLine("  /noproxy               Do not generate proxy file");
         _out.WriteLine("  /no_dlldata            Do not generate DLL data file");
         _out.WriteLine("  /metadata_dir <dir>    Specify metadata directory");
-        _out.WriteLine("  /nomidl                Do not invoke MIDL");
+        _out.WriteLine("  /nomidl                Write only the .winmd and header (no _i.c, proxy or dlldata)");
         _out.WriteLine("  /deterministic         Reproducible .winmd: content-derived MVID and timestamp");
         _out.WriteLine("  /strict                Pure MIDL3 mode (default) — warn on classic constructs");
 #if WITH_COMPAT

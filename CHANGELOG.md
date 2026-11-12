@@ -11,6 +11,7 @@
   - The class lists the interfaces its explicit interfaces require (`IClosable`, `IInputStream` and `IOutputStream` for `IRandomAccessStream`) and flattens their members. Built-in interfaces such as `IClosable` use the referenced WinMD's definition, so `Close()` is no longer dropped
   - Generic types in flattened signatures no longer get a doubled arity suffix (``IAsyncOperation`1`1``)
 - `[attributeusage]` targets of attributes from referenced WinMDs are decoded from the WinRT `AttributeTargets` value the WinMD stores
+- **`/nomidl` writes only the `.winmd` and the header**, as `midl.exe` does, even when `/iid`, `/proxy` or `/dlldata` name output files. The OS build passes all three for every WinRT IDL directory, so WinMIDL wrote `_i.c`, `_p.c` and `dlldata.c` files that classic MIDL never produced (and binplaced the extra `_i.c`)
 
 ## v0.1.19 (2026-09-04)
 

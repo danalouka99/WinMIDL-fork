@@ -445,6 +445,26 @@ public class CliSwitchTests : IDisposable
     }
 
     // -----------------------------------------------------------------------
+    // /nomidl — only the .winmd and the header, as midl.exe does
+    // -----------------------------------------------------------------------
+    [Fact]
+    public void NoMidl_WritesOnlyWinMdAndHeader_EvenWithIidProxyAndDllDataPaths()
+    {
+        var idl = WriteIdl(SimpleIdl);
+        string P(string name) => Path.Combine(_tempDir, name);
+
+        var (exit, _, _) = Run("/nologo", "/winrt", "/nomidl", "/winmd", P("TestNs.winmd"), "/h", P("out.h"),
+            "/iid", P("out_i.c"), "/proxy", P("out_p.c"), "/dlldata", P("dlldata.c"), "/no_def_idir", idl);
+
+        Assert.Equal(0, exit);
+        Assert.True(File.Exists(P("TestNs.winmd")));
+        Assert.True(File.Exists(P("out.h")));
+        Assert.False(File.Exists(P("out_i.c")));
+        Assert.False(File.Exists(P("out_p.c")));
+        Assert.False(File.Exists(P("dlldata.c")));
+    }
+
+    // -----------------------------------------------------------------------
     // /deterministic — two builds of the same input are byte-identical
     // -----------------------------------------------------------------------
     [Fact]
